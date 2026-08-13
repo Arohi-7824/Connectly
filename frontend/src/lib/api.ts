@@ -1,0 +1,9 @@
+import axios from "axios";
+
+export const api = axios.create({
+  baseURL: process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4000",
+});
+
+export function setAuthToken(token: string) {
+  api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
+}

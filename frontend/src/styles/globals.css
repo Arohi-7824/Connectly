@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+body {
+  background-color: #0d0d14;
+  color: #ffffff;
+  font-family: 'Inter', system-ui, sans-serif;
+  margin: 0;
+}
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #13131f; }
+::-webkit-scrollbar-thumb { background: #ffffff22; border-radius: 3px; }
+
+.gradient-text {
+  background: linear-gradient(135deg, #00c8ff, #7c3aed);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.glow-cyan { box-shadow: 0 0 24px #00c8ff33; }
+
+.card-hover { transition: border-color 0.2s ease, transform 0.2s ease; }
+.card-hover:hover { border-color: #00c8ff55; transform: translateY(-2px); }
