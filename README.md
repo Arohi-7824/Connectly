@@ -1,1001 +1,132 @@
 # Connectly
 
-Connectly is a full-stack real-time messaging and child-safety platform. The repository contains three services:
+A messaging app for a younger generation — expressive, fast, and playful on the
+surface, with a silent multi-layer AI safety pipeline running underneath that
+detects grooming, drug solicitation, and coded predatory language in real
+time, routing risk signals to a guardian dashboard without the chat users
+ever knowing it exists.
 
-- **Frontend** — Next.js/React/TypeScript chat and account UI
-- **Backend** — Node.js/Express API, PostgreSQL persistence, JWT authentication, and Socket.IO
-- **AI Safety Service** — FastAPI service that analyzes messages using a multi-layer risk-scoring pipeline
-
-The current project also contains parent/guardian features for linking accounts and viewing safety alerts.
-
----
-
-## Table of Contents
-
-- [Architecture](#architecture)
-- [Features](#features)
-- [Project Structure](#project-structure)
-- [Technology Stack](#technology-stack)
-- [Prerequisites](#prerequisites)
-- [Environment Configuration](#environment-configuration)
-- [Database](#database)
-- [Running Locally](#running-locally)
-- [API Reference](#api-reference)
-- [Real-Time Socket Events](#real-time-socket-events)
-- [AI Safety Service](#ai-safety-service)
-- [Parent and Guardian Safety Flow](#parent-and-guardian-safety-flow)
-- [Frontend Pages](#frontend-pages)
-- [Docker](#docker)
-- [Troubleshooting](#troubleshooting)
-- [Security Notes](#security-notes)
-- [Current Limitations](#current-limitations)
-- [Development](#development)
-
+The design challenge was making the safety layer completely invisible while
+keeping it effective — because the moment a predator knows they're being
+monitored, they leave.
 
 ---
+
+## Architecture
+
+Three services, talking over REST + WebSockets:
+
+```
+frontend/    Next.js 14 (App Router) + TypeScript + Tailwind
+backend/     Node.js + Express + Socket.IO + PostgreSQL + Redis
+ai-service/  Python + FastAPI — the safety pipeline (see below)
+```
+
+Real-time delivery uses Socket.IO rooms keyed by `conversation_id`, plus a
+personal per-user room (`user:{id}`) for direct notifications that aren't
+tied to a specific conversation (contact request accepted, added to a group,
+mood/music status updates).
+
+## The safety pipeline
+
+Every message passes through six layers before it's considered clear. The
+final risk score is the **maximum** across all layers — any single strong
+signal is enough to flag, whether that's an exact keyword match or a
+pattern only visible across several messages.
+
+| Layer | What it catches | How |
+|---|---|---|
+| 1. Grooming keywords | Exact predatory phrases ("our secret", "don't tell your parents") | Regex |
+| 2. Drugs / illegal activity | Drug slang, weapon offers, trafficking-adjacent language | Keyword dictionary |
+| 3. Coded language & emoji | The same threats hidden behind emoji or slang | Decodes to plain text, then re-runs the other layers |
+| 4. Toxicity | General toxic/threatening/hateful language, not predator-specific | `unitary/toxic-bert` |
+| 5. Zero-shot intent | Novel grooming with **no** keywords at all — e.g. "you seem lonely, I could keep you company" | `facebook/bart-large-mnli`, NLI against threat-category labels |
+| 6. Trajectory | Escalating patterns across messages that each look mild alone | Same zero-shot classifier, run on the sender's recent messages + current one combined into one window |
+
+Layer 5 has a minimum word-count floor and a higher confidence threshold
+than the deterministic layers, since short/ambiguous text produces
+unreliable zero-shot scores. Layer 6 exists specifically to catch what that
+floor would otherwise miss — a short message like *"you are pretty"* means
+little alone, but scored alongside *"i think you are beautiful," "can we
+meet," "it would be our secret"* it becomes a clear pattern.
+
+When something crosses threshold, an alert is created and routed to the
+**receiving** user's linked parent (in a group, every other member's
+parent) — visible on a dedicated parent dashboard, never surfaced to the
+chat itself.
 
 ## Features
 
-### Messaging
+**Core**
+- Real-time 1:1 and group messaging, contact requests, resilient reconnect handling
+- Reactions, polls, voice messages (recorded client-side with a real computed waveform, not a decorative one)
+- Mood status, streaks (consecutive days both people messaged), custom chat themes
+- Music status via Last.fm's public API (no OAuth required — reads "now playing" from Spotify scrobbles)
 
-- Direct one-to-one conversations
-- Persistent message history
-- Real-time message delivery with Socket.IO
-- Conversation rooms
-- Unread message counts
-- Mark conversation as read
+**Groups**
+- Full admin/member roles, rename, add/remove members, leave
+- Squad Goals — shared checklist items per group; each member checks in individually, completes once everyone has
 
-### Contacts
+**Guardian safety**
+- Parent–child account linking (by email or invite code)
+- Parent dashboard surfacing flagged messages with risk score, category, and explanation
 
-- Search users
-- Send contact requests
-- Accept requests
-- Reject requests
-- View pending requests
-- View sent requests
-- Create a conversation when a contact request is accepted
+## Setup
 
-### Authentication
+Migrations aren't auto-run — apply them in order against your Postgres instance:
 
-- User registration
-- User login
-- Password hashing with `bcryptjs`
-- JWT-based authentication
-- User roles:
-  - `child`
-  - `parent`
-
-### Parent / Guardian Safety
-
-- Parent-child linking data
-- Guardian account linking
-- View linked children
-- View safety alerts
-- Risk alerts associated with analyzed messages
-
-### AI Safety Analysis
-
-The AI service uses multiple layers:
-
-1. Grooming pattern detection
-2. Drug/illegal-activity detection
-3. Coded-language and emoji decoding
-4. Transformer-based toxicity classification
-5. Zero-shot intent classification
-
-The final risk score is the highest score produced by the enabled layers.
-
-### Frontend
-
-- Next.js App Router
-- TypeScript
-- Tailwind CSS
-- Chat interface
-- Login/signup flows
-- Parent dashboard
-- Guardian signup/login
-- Emoji support in the chat UI
-
----
-
-## Technology Stack
-
-| Layer | Technology |
-|---|---|
-| Frontend | Next.js 14 |
-| UI | React 18 |
-| Language | TypeScript |
-| Styling | Tailwind CSS 3 |
-| HTTP client | Axios |
-| Real-time | Socket.IO 4 |
-| Backend | Node.js + Express |
-| Authentication | JWT |
-| Password hashing | bcryptjs |
-| Database | PostgreSQL |
-| Database driver | node-postgres (`pg`) |
-| Cache/client | Redis client included |
-| AI API | FastAPI |
-| AI runtime | Python 3.11 |
-| ML | PyTorch + Hugging Face Transformers |
-
----
-
-## Prerequisites
-
-Install:
-
-- Node.js 20 recommended
-- npm
-- PostgreSQL
-- Redis
-- Python 3.11 recommended
-
-The backend Dockerfile uses Node 20, and the AI-service Dockerfile uses Python 3.11.
-
-The AI service downloads/loads Hugging Face models, so its first startup can require substantially more time and memory than the Node services.
-
----
-
-## Environment Configuration
-
-### Frontend
-
-Create:
-
-```text
-frontend/.env.local
+```bash
+cd backend
+for f in migrations/*.sql; do
+  psql -h localhost -U safechat -d safechat -p 5432 -f "$f"
+done
 ```
 
-using:
-
-```env
-NEXT_PUBLIC_BACKEND_URL=http://localhost:4000
+**backend/.env**
 ```
-
-The frontend Axios client uses `NEXT_PUBLIC_BACKEND_URL` and falls back to:
-
-```text
-http://localhost:4000
-```
-
-The Socket.IO client uses the same backend URL.
-
-### Backend
-
-Create:
-
-```text
-backend/.env
-```
-
-Example:
-
-```env
 PORT=4000
-
 POSTGRES_USER=safechat
 POSTGRES_PASSWORD=safechat
 POSTGRES_DB=safechat
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
-
 REDIS_HOST=localhost
 REDIS_PORT=6379
-
 AI_SERVICE_URL=http://localhost:8000
-
-JWT_SECRET=change_this_in_development
+JWT_SECRET=dev_secret_change_me
 CORS_ORIGIN=http://localhost:3000
+LASTFM_API_KEY=your_lastfm_api_key   # free, instant at last.fm/api
 ```
 
-The repository's `.env.example` currently uses Docker-oriented hostnames such as `postgres` and `redis`. If you are running the services directly on your machine, use `localhost` unless you have configured those hostnames yourself.
-
-### AI Service
-
-Create:
-
-```text
-ai-service/.env
+**frontend/.env / .env.local**
+```
+NEXT_PUBLIC_BACKEND_URL=http://localhost:4000
 ```
 
-Example:
-
-```env
-PORT=8000
-RISK_THRESHOLD=0.7
-```
-
----
-
-## Database
-
-The backend uses PostgreSQL.
-
-### Core tables
-
-Migration `001_init.sql` creates:
-
-- `users`
-- `parent_links`
-- `conversations`
-- `messages`
-- `alerts`
-
-Subsequent migrations add:
-
-- usernames
-- contacts
-- date of birth / age
-- invite-code infrastructure
-- guardian links
-- contact requests
-
-### Applying migrations
-
-The project contains SQL migrations but does not include a migration runner in `package.json`.
-
-Apply them in order:
-
-```text
-001_init.sql
-002_contacts.sql
-003_dob_invite.sql
-004_guardian_link.sql
-005_contact_requests.sql
-```
-
-For example, with `psql`:
-
+**Install & run** (three terminals):
 ```bash
-psql -U safechat -d safechat -f backend/migrations/001_init.sql
-psql -U safechat -d safechat -f backend/migrations/002_contacts.sql
-psql -U safechat -d safechat -f backend/migrations/003_dob_invite.sql
-psql -U safechat -d safechat -f backend/migrations/004_guardian_link.sql
-psql -U safechat -d safechat -f backend/migrations/005_contact_requests.sql
-```
-
-Adjust the connection parameters for your PostgreSQL installation.
-
-> **Important:** The migration files are intended to be applied in sequence. Migration `005_contact_requests.sql` drops and recreates the `contacts` table, so do not treat migrations as independent scripts.
-
----
-
-## Running Locally
-
-Run each service in its own terminal.
-
-### 1. Start PostgreSQL and Redis
-
-Make sure PostgreSQL and Redis are running.
-
-Verify PostgreSQL is accepting connections before starting the backend.
-
-### 2. Start the AI service
-
-```bash
-cd ai-service
-
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-uvicorn app.main:app --reload --port 8000
-```
-
-On Windows PowerShell:
-
-```powershell
-cd ai-service
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-
-uvicorn app.main:app --reload --port 8000
-```
-
-The AI service should be available at:
-
-```text
-http://localhost:8000
-```
-
-Health check:
-
-```text
-GET http://localhost:8000/health
-```
-
-### 3. Start the backend
-
-```bash
-cd backend
-npm install
-npm run dev
-```
-
-The backend should be available at:
-
-```text
-http://localhost:4000
-```
-
-Health check:
-
-```text
-GET http://localhost:4000/health
-```
-
-Expected response:
-
-```json
-{
-  "status": "ok"
-}
-```
-
-### 4. Start the frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Open:
-
-```text
-http://localhost:3000
-```
-
----
-
-## API Reference
-
-All protected endpoints require:
-
-```http
-Authorization: Bearer <JWT>
-```
-
-### Authentication
-
-#### Register
-
-```http
-POST /api/auth/register
-```
-
-Example:
-
-```json
-{
-  "name": "Arohi",
-  "email": "arohi@example.com",
-  "password": "password",
-  "dob": "2010-01-01",
-  "role": "child"
-}
-```
-
-The backend accepts `parent` as the parent role; other values are normalized to the `child` role.
-
-#### Login
-
-```http
-POST /api/auth/login
-```
-
-Example:
-
-```json
-{
-  "email": "arohi@example.com",
-  "password": "password"
-}
-```
-
-Returns a JWT and basic user information.
-
----
-
-### Messages
-
-#### Get conversation history
-
-```http
-GET /api/messages/:conversationId
-```
-
-Returns up to the latest 50 messages for the conversation.
-
-> The current archive exposes message history through REST. New messages are sent through Socket.IO rather than a REST `POST` endpoint.
-
----
-
-### Contacts
-
-#### Get contacts
-
-```http
-GET /api/contacts
-```
-
-#### Search users
-
-```http
-GET /api/contacts/search?q=<query>
-```
-
-The current backend requires at least two characters for a search.
-
-#### Get pending requests
-
-```http
-GET /api/contacts/pending
-```
-
-#### Get sent requests
-
-```http
-GET /api/contacts/sent
-```
-
-#### Send contact request
-
-```http
-POST /api/contacts/request
-```
-
-Body:
-
-```json
-{
-  "receiverId": 123
-}
-```
-
-#### Accept request
-
-```http
-POST /api/contacts/accept/:requestId
-```
-
-#### Reject request
-
-```http
-POST /api/contacts/reject/:requestId
-```
-
-#### Mark conversation as read
-
-```http
-POST /api/contacts/read/:conversationId
-```
-
----
-
-### Parent
-
-#### Get alerts
-
-```http
-GET /api/parent/alerts
-```
-
----
-
-### Guardian
-
-#### Link a child
-
-```http
-POST /api/guardian/link
-```
-
-Body:
-
-```json
-{
-  "childEmail": "child@example.com"
-}
-```
-
-#### Get linked children
-
-```http
-GET /api/guardian/children
-```
-
-#### Get guardian alerts
-
-```http
-GET /api/guardian/alerts
-```
-
----
-
-## Real-Time Socket Events
-
-The backend initializes Socket.IO on the same HTTP server as Express.
-
-### Client → server
-
-#### `conversation:join`
-
-Join a conversation room:
-
-```js
-socket.emit("conversation:join", String(conversationId));
-```
-
-#### `message:send`
-
-Send a message:
-
-```js
-socket.emit("message:send", {
-  conversationId: String(conversationId),
-  content: "Hello!"
-});
-```
-
-The backend:
-
-1. Gets the authenticated user from the Socket.IO connection.
-2. Saves the message to PostgreSQL.
-3. Broadcasts `message:new`.
-4. Starts asynchronous AI analysis.
-
-### Server → client
-
-#### `message:new`
-
-Example:
-
-```json
-{
-  "id": 42,
-  "sender_id": 7,
-  "conversation_id": 12,
-  "content": "Hello!",
-  "created_at": "2026-08-13T14:00:00.000Z"
-}
-```
-
-The frontend uses this event to update the active chat and conversation previews.
-
----
-
-## Socket Authentication
-
-The frontend connects with:
-
-```js
-io(BACKEND_URL, {
-  auth: { token },
-  transports: ["websocket"],
-  reconnection: true,
-  reconnectionAttempts: Infinity,
-  reconnectionDelay: 1000
-});
-```
-
-The backend Socket.IO middleware verifies the JWT before allowing the connection.
-
-This means a client cannot establish a normal authenticated socket session without a valid token.
-
----
-
-## AI Safety Service
-
-The AI service is a FastAPI application.
-
-### Health
-
-```http
-GET /health
-```
-
-Example response:
-
-```json
-{
-  "status": "ok",
-  "version": "0.3.0"
-}
-```
-
-### Analyze a message
-
-```http
-POST /analyze
-```
-
-Example:
-
-```json
-{
-  "text": "message text",
-  "language": "auto",
-  "sender_age": 15
-}
-```
-
-The API response contains:
-
-```json
-{
-  "risk_score": 0.0,
-  "category": "none",
-  "flagged": false,
-  "explanation": "No risk detected...",
-  "layers": {
-    "grooming": 0.0,
-    "drug_illegal": 0.0,
-    "coded_language": 0.0,
-    "transformer": 0.0,
-    "zero_shot": 0.0
-  }
-}
-```
-
-### Risk threshold
-
-The configured default is:
-
-```text
-RISK_THRESHOLD=0.7
-```
-
-A final risk score at or above the threshold is marked as:
-
-```text
-flagged = true
-```
-
----
-
-## AI Pipeline
-
-The current `risk_scoring.py` pipeline performs the following:
-
-### 1. Preprocessing
-
-Text is:
-
-- lowercased
-- whitespace-normalized
-- decoded for several leetspeak substitutions
-- decoded for selected dot-separated obfuscations
-- normalized for repeated punctuation
-
-### 2. Grooming classifier
-
-Regex/pattern detection looks for known grooming-related signals such as:
-
-- requests for pictures
-- secrecy
-- meeting alone
-- requests involving a child's location
-- moving conversations elsewhere
-- inappropriate age/appearance comments
-
-### 3. Drug/illegal-activity classifier
-
-Detects selected:
-
-- drug terms
-- drug slang
-- buying/selling patterns
-- weapon-related phrases
-- trafficking-style signals
-
-### 4. Coded-language classifier
-
-Decodes selected:
-
-- emojis
-- number codes
-- coded phrases
-- obfuscated words
-
-The decoded text is passed to subsequent classifiers.
-
-### 5. Transformer classifier
-
-Uses:
-
-```text
-unitary/toxic-bert
-```
-
-to identify semantic toxicity categories such as:
-
-- toxic
-- severe toxic
-- obscene
-- threat
-- insult
-- identity hate
-
-### 6. Zero-shot classifier
-
-Uses:
-
-```text
-facebook/bart-large-mnli
-```
-
-to compare a message against threat-intent descriptions such as:
-
-- exploitation of a child's loneliness
-- requests for photos/videos
-- offering drugs
-- secret meetings
-- secrecy from parents
-- coercion
-- isolation from family/friends
-- inappropriate sexual messaging
-
-### Final score
-
-The current implementation takes:
-
-```text
-maximum score across the five layers
-```
-
-and compares it to `RISK_THRESHOLD`.
-
----
-
-## AI Model Startup
-
-The FastAPI lifespan pre-loads:
-
-- the transformer classifier
-- the zero-shot classifier
-
-when the AI service starts.
-
-This means the first startup can be slow and can require significant RAM/CPU.
-
-The zero-shot model is particularly large, so allow additional startup time and disk/network access when it is downloaded for the first time.
-
----
-
-## Parent and Guardian Safety Flow
-
-The backend supports a safety-alert workflow:
-
-```text
-Child sends message
-       │
-       ▼
-Message saved
-       │
-       ▼
-AI analysis
-       │
-       ▼
-risk_score >= 0.7
-       │
-       ▼
-Flagged
-       │
-       ▼
-Find linked parent
-       │
-       ▼
-Create alert
-```
-
-The alert contains:
-
-- message ID
-- child ID
-- parent ID
-- risk score
-- category
-- status
-- creation time
-
-The current alert service explicitly leaves external notification delivery as a future TODO.
-
----
-
-## Frontend Pages
-
-The current frontend contains these routes:
-
-| Route | Purpose |
-|---|---|
-| `/` | Landing/home page |
-| `/login` | User login |
-| `/signup` | User registration |
-| `/chat` | Main real-time chat |
-| `/parents` | Parent-related page |
-| `/parent-dashboard` | Parent safety dashboard |
-| `/guardian/login` | Guardian login |
-| `/guardian/signup` | Guardian signup/linking flow |
-
----
-
-## Frontend API Configuration
-
-The Axios client is defined in:
-
-```text
-frontend/src/lib/api.ts
-```
-
-It uses:
-
-```text
-NEXT_PUBLIC_BACKEND_URL
-```
-
-with a fallback to:
-
-```text
-http://localhost:4000
-```
-
-Authentication is added using:
-
-```ts
-setAuthToken(token)
-```
-
-which sets the Axios `Authorization` header.
-
----
-
-## Docker
-
-Each service has its own Dockerfile.
-
-### Backend
-
-```bash
-cd backend
-docker build -t connectly-backend .
-docker run --env-file .env -p 4000:4000 connectly-backend
-```
-
-### Frontend
-
-```bash
-cd frontend
-docker build -t connectly-frontend .
-docker run --env-file .env -p 3000:3000 connectly-frontend
-```
-
-### AI service
-
-```bash
-cd ai-service
-docker build -t connectly-ai .
-docker run --env-file .env -p 8000:8000 connectly-ai
-```
-
-### Important Docker note
-
-The uploaded repository does **not** contain a root `docker-compose.yml`.
-
-The backend `.env.example` uses Docker-style service names:
-
-```text
-postgres
-redis
-ai-service
-```
-
-If you run the services manually without Docker Compose, change these to reachable hostnames such as `localhost`.
-
----
-
-### Database connection errors
-
-Check:
-
-```env
-POSTGRES_USER
-POSTGRES_PASSWORD
-POSTGRES_DB
-POSTGRES_HOST
-POSTGRES_PORT
-```
-
-For local development, `POSTGRES_HOST` is usually:
-
-```text
-localhost
-```
-
-For a Docker network, it may be:
-
-```text
-postgres
-```
-
-### AI service unavailable
-
-The backend's `aiClient.js` catches AI-service failures and returns an `unscored` result rather than preventing the message from being sent.
-
-Check:
-
-```text
-AI_SERVICE_URL=http://localhost:8000
-```
-
-and confirm:
-
-```text
-GET /health
-```
-
-works.
-
-### AI service starts slowly
-
-This is expected because the application pre-loads Hugging Face models.
-
-Make sure the machine has enough memory and that model downloads can complete.
-
-`
----
-
-
-## Development
-
-### Frontend
-
-```bash
-cd frontend
-
-npm install
-npm run dev
-```
-
-Production build:
-
-```bash
-npm run build
-npm start
-```
-
-Lint:
-
-```bash
-npm run lint
-```
-
-### Backend
-
-```bash
-cd backend
-
-npm install
-npm run dev
-```
-
-Production:
-
-```bash
-npm start
-```
-
-### AI service
-
-```bash
-cd ai-service
-
-python3.11 -m venv .venv
-source .venv/bin/activate
-
-pip install -r requirements.txt
-
-uvicorn app.main:app --reload --port 8000
-```
-
+cd backend && npm install && npm run dev       # :4000
+cd ai-service && pip install -r requirements.txt && uvicorn app.main:app --reload  # :8000
+cd frontend && npm install && npm run dev       # :3000
+```
+
+Voice message uploads are written to `backend/uploads/voice/` (created
+automatically on first upload) and served statically — no external storage
+required for local dev.
+
+## Stack
+
+- **Frontend:** Next.js 14, TypeScript, Tailwind, `socket.io-client`, `emoji-picker-react`
+- **Backend:** Express, Socket.IO, `pg`, `redis`, `jsonwebtoken`, `bcryptjs`, `multer`
+- **AI service:** FastAPI, `transformers` (toxic-bert + bart-large-mnli)
+
+## A note on scope
+
+This is a portfolio/demo project, not a production safety system. Real
+deployment would need: rate limiting, a proper migration runner instead of
+manual `psql` application, encrypted message storage, human review before
+any alert reaches a parent (false positives are possible, especially from
+the zero-shot layers), and far more adversarial testing than a solo build
+can cover. The interesting part is the pipeline design and the real bugs
+found and fixed while building it — not a claim that it's ready to protect
+anyone today.
